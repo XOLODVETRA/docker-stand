@@ -56,7 +56,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```powershell
 git clone https://github.com/XOLODVETRA/docker-stand.git
 cd docker-stand
-cd docker-stand
 Copy-Item .env.example .env
 docker compose up -d --wait
 docker compose ps
