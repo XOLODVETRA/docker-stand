@@ -62,7 +62,7 @@ docker compose up -d --wait
 docker compose ps
 ```
 
-`<url>` — адрес этого репозитория; `git clone` сам создаёт каталог `docker-stand`. В bash `Copy-Item .env.example .env` — это `cp .env.example .env`, остальные команды те же. `--wait` возвращает управление только когда все сервисы стали `healthy`; без него `docker compose ps` первые секунды показывает `health: starting`.
+`git clone` сам создаёт каталог `docker-stand`. В bash `Copy-Item .env.example .env` — это `cp .env.example .env`, остальные команды те же. `--wait` возвращает управление только когда все сервисы стали `healthy`; без него `docker compose ps` первые секунды показывает `health: starting`.
 
 ```text
 NAME                     IMAGE                COMMAND                  SERVICE   CREATED          STATUS                    PORTS
