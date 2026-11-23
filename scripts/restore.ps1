@@ -4,11 +4,12 @@
     Восстанавливает базу PostgreSQL из дампа, созданного backup.ps1.
 
 .DESCRIPTION
-    Копирует дамп в контейнер db и запускает pg_restore с --clean --if-exists,
-    то есть текущее содержимое базы заменяется содержимым дампа.
+    Копирует дамп в контейнер db, проверяет его через pg_restore -l, очищает
+    схему public и запускает pg_restore с --clean --if-exists.
     Параметры подключения берутся из .env (POSTGRES_DB, POSTGRES_USER).
-    Успех определяется не кодом pg_restore (предупреждения --clean на пустой
-    базе дают ненулевой код), а тем, что данные после восстановления читаются.
+    Успех определяется не кодом pg_restore (предупреждения --clean дают
+    ненулевой код), а тем, что после очистки схемы в products появились
+    строки из дампа: ноль строк или нечитаемая таблица — провал.
 
 .PARAMETER File
     Путь к файлу дампа (.dump). Обязательный параметр.
@@ -51,6 +52,17 @@ function Read-EnvFile {
     }
 
     ConvertFrom-StringData -StringData ($lines -join "`n")
+}
+
+function Get-LastLogLine {
+    param($Lines)
+
+    $detail = @($Lines | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    if ($detail.Count -eq 0) {
+        return $null
+    }
+
+    return $detail[-1]
 }
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -127,20 +139,49 @@ if ($copyCode -ne 0) {
     Fail "Не удалось скопировать дамп в контейнер (код $copyCode)."
 }
 
+# Дамп проверяется до любых изменений в базе: битый или чужой файл не должен
+# даже доходить до очистки схемы.
+Write-Output 'Проверяю дамп (pg_restore -l)...'
+
+$listLog = @(docker compose exec -T db pg_restore -l /tmp/restore.dump 2>&1 | ForEach-Object { "$_" })
+$listCode = $LASTEXITCODE
+
+if ($listCode -ne 0) {
+    docker compose exec -T db rm -f /tmp/restore.dump | Out-Null
+    $detail = Get-LastLogLine -Lines $listLog
+    if ($detail) {
+        Fail "Дамп не читается: $detail"
+    }
+    Fail "Дамп не читается: pg_restore -l завершился с кодом $listCode."
+}
+
+# Явная очистка схемы: после неё таблицы products в базе заведомо нет, и
+# найденные далее строки могут прийти только из дампа.
+Write-Output 'Очищаю схему public...'
+
+docker compose exec -T db psql -U $user -d $db -c 'drop schema public cascade; create schema public;'
+if ($LASTEXITCODE -ne 0) {
+    Fail "Не удалось очистить схему public (psql код $LASTEXITCODE)."
+}
+
 Write-Output 'Восстанавливаю базу...'
 
 docker compose exec -T db pg_restore -U $user -d $db --clean --if-exists --no-owner /tmp/restore.dump
 $restoreCode = $LASTEXITCODE
 Write-Output "pg_restore код: $restoreCode"
 
-# Код pg_restore сам по себе не приговор: --clean на пустой базе даёт
-# предупреждения и ненулевой код. Решает проверка данных ниже.
+# Код pg_restore сам по себе не приговор: --clean даёт предупреждения и
+# ненулевой код. Приговор выносит проверка данных ниже, но код печатаем.
 $countOutput = docker compose exec -T db psql -U $user -d $db -tAc 'select count(*) from products' 2>$null
 $countCode = $LASTEXITCODE
 $countText = ($countOutput | Out-String).Trim()
 
 if ($countCode -ne 0 -or $countText -notmatch '^\d+$') {
-    Fail "Данные не читаются: таблица products недоступна (psql код $countCode)."
+    Fail "Восстановление не удалось: таблица products недоступна (psql код $countCode, pg_restore код $restoreCode)."
+}
+
+if ([int]$countText -le 0) {
+    Fail "Восстановление не удалось: в таблице products 0 строк — данные из дампа не загрузились (pg_restore код $restoreCode)."
 }
 
 docker compose exec -T db rm -f /tmp/restore.dump | Out-Null

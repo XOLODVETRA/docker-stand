@@ -6,7 +6,8 @@
 .DESCRIPTION
     Параметры подключения берутся из .env (POSTGRES_DB, POSTGRES_USER).
     Дамп снимается внутри контейнера через pg_dump в формате custom,
-    затем копируется на хост в каталог OutDir.
+    проверяется там же через pg_restore -l и только потом копируется
+    на хост в каталог OutDir.
 
 .PARAMETER OutDir
     Каталог для дампов. По умолчанию .\backups.
@@ -47,6 +48,17 @@ function Read-EnvFile {
     ConvertFrom-StringData -StringData ($lines -join "`n")
 }
 
+function Get-LastLogLine {
+    param($Lines)
+
+    $detail = @($Lines | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
+    if ($detail.Count -eq 0) {
+        return $null
+    }
+
+    return $detail[-1]
+}
+
 $root = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $root '.env'
 
@@ -80,6 +92,11 @@ if ([string]::IsNullOrWhiteSpace($user)) {
 # поэтому скрипт можно запускать из любого каталога.
 Push-Location -LiteralPath $root
 
+$dbContainer = docker compose ps -q db
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($dbContainer | Out-String))) {
+    Fail 'Контейнер db не запущен — сначала docker compose up -d'
+}
+
 if (-not (Test-Path -LiteralPath $OutDir)) {
     try {
         New-Item -ItemType Directory -Path $OutDir -Force -ErrorAction Stop | Out-Null
@@ -105,6 +122,21 @@ Write-Output 'Создаю дамп внутри контейнера db...'
 docker compose exec -T db pg_dump -U $user -d $db -Fc -f /tmp/backup.dump
 if ($LASTEXITCODE -ne 0) {
     Fail "pg_dump завершился с кодом $LASTEXITCODE."
+}
+
+# Битый дамп должен падать здесь, а не при восстановлении.
+Write-Output 'Проверяю дамп (pg_restore -l)...'
+
+$listLog = @(docker compose exec -T db pg_restore -l /tmp/backup.dump 2>&1 | ForEach-Object { "$_" })
+$listCode = $LASTEXITCODE
+
+if ($listCode -ne 0) {
+    docker compose exec -T db rm -f /tmp/backup.dump | Out-Null
+    $detail = Get-LastLogLine -Lines $listLog
+    if ($detail) {
+        Fail "Дамп не читается: $detail"
+    }
+    Fail "Дамп не читается: pg_restore -l завершился с кодом $listCode."
 }
 
 # docker compose cp пишет прогресс в stderr. PS 5.1 превращает его в
