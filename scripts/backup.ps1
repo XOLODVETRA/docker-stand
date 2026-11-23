@@ -31,7 +31,9 @@ $ErrorActionPreference = 'Continue'
 
 function Fail {
     param([string]$Message)
-    Write-Error $Message
+    # Write-Error добавляет к строке At line, CategoryInfo и
+    # FullyQualifiedErrorId; для пользователя нужна одна чистая строка.
+    $host.UI.WriteErrorLine("Fail : $Message")
     exit 1
 }
 

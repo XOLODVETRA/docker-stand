@@ -29,7 +29,7 @@ services:
     image: nginx:1.27-alpine
     restart: unless-stopped
     ports:
-      - "${STACK_PORT:?Скопируйте .env.example в .env}:80"
+      - "127.0.0.1:${STACK_PORT:?Скопируйте .env.example в .env}:80"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./site:/usr/share/nginx/html:ro

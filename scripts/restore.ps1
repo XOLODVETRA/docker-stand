@@ -5,11 +5,12 @@
 
 .DESCRIPTION
     Копирует дамп в контейнер db, проверяет его через pg_restore -l, очищает
-    схему public и запускает pg_restore с --clean --if-exists.
+    схему public и запускает pg_restore с --exit-on-error --no-owner.
     Параметры подключения берутся из .env (POSTGRES_DB, POSTGRES_USER).
-    Успех определяется не кодом pg_restore (предупреждения --clean дают
-    ненулевой код), а тем, что после очистки схемы в products появились
-    строки из дампа: ноль строк или нечитаемая таблица — провал.
+    Успех доказывается данными, а не только кодом возврата: ненулевой код
+    pg_restore — провал; после восстановления в products должно быть больше
+    нуля строк, а в categories ровно 3. Если проверка не прошла, скрипт
+    называет её и код pg_restore и возвращает 1.
 
 .PARAMETER File
     Путь к файлу дампа (.dump). Обязательный параметр.
@@ -37,7 +38,9 @@ $ErrorActionPreference = 'Continue'
 
 function Fail {
     param([string]$Message)
-    Write-Error $Message
+    # Write-Error добавляет к строке At line, CategoryInfo и
+    # FullyQualifiedErrorId; для пользователя нужна одна чистая строка.
+    $host.UI.WriteErrorLine("Fail : $Message")
     exit 1
 }
 
@@ -122,7 +125,7 @@ if (-not $Force) {
     $raw = Read-Host 'Продолжить? [y/N]'
     $answer = ('' + $raw).Trim().ToLowerInvariant()
     if (@('y', 'yes', 'д', 'да') -notcontains $answer) {
-        Write-Error 'Восстановление отменено.'
+        $host.UI.WriteErrorLine('Восстановление отменено.')
         exit 1
     }
 }
@@ -166,25 +169,40 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Output 'Восстанавливаю базу...'
 
-docker compose exec -T db pg_restore -U $user -d $db --clean --if-exists --no-owner /tmp/restore.dump
+# --clean здесь не нужен: схема public уже снесена выше, а предупреждения
+# --clean про отсутствующие объекты и давали тот ненулевой код, которому
+# нельзя было верить. --exit-on-error останавливает восстановление на
+# первой ошибке, поэтому её видно сразу.
+docker compose exec -T db pg_restore -U $user -d $db --exit-on-error --no-owner /tmp/restore.dump
 $restoreCode = $LASTEXITCODE
 Write-Output "pg_restore код: $restoreCode"
 
-# Код pg_restore сам по себе не приговор: --clean даёт предупреждения и
-# ненулевой код. Приговор выносит проверка данных ниже, но код печатаем.
-$countOutput = docker compose exec -T db psql -U $user -d $db -tAc 'select count(*) from products' 2>$null
-$countCode = $LASTEXITCODE
-$countText = ($countOutput | Out-String).Trim()
-
-if ($countCode -ne 0 -or $countText -notmatch '^\d+$') {
-    Fail "Восстановление не удалось: таблица products недоступна (psql код $countCode, pg_restore код $restoreCode)."
+if ($restoreCode -ne 0) {
+    docker compose exec -T db rm -f /tmp/restore.dump | Out-Null
+    Fail "Восстановление не удалось: pg_restore код $restoreCode."
 }
 
-if ([int]$countText -le 0) {
-    Fail "Восстановление не удалось: в таблице products 0 строк — данные из дампа не загрузились (pg_restore код $restoreCode)."
+# Два факта вместо одного: products непустая и categories ровно 3.
+$countsOutput = docker compose exec -T db psql -U $user -d $db -tAc 'select (select count(*) from products), (select count(*) from categories)' 2>$null
+$countsCode = $LASTEXITCODE
+$countsText = ($countsOutput | Out-String).Trim()
+
+if ($countsCode -ne 0 -or $countsText -notmatch '^(\d+)\|(\d+)$') {
+    Fail "Восстановление не удалось: проверка products и categories не прошла — таблицы недоступны (psql код $countsCode, pg_restore код $restoreCode)."
+}
+
+$productRows = [int]$Matches[1]
+$categoryRows = [int]$Matches[2]
+
+if ($productRows -le 0) {
+    Fail "Восстановление не удалось: проверка products не прошла — строк 0, ожидалось больше 0 (pg_restore код $restoreCode)."
+}
+
+if ($categoryRows -ne 3) {
+    Fail "Восстановление не удалось: проверка categories не прошла — строк $categoryRows, ожидалось 3 (pg_restore код $restoreCode)."
 }
 
 docker compose exec -T db rm -f /tmp/restore.dump | Out-Null
 
-Write-Output "Восстановлено: таблица products, строк: $countText"
+Write-Output "Восстановлено: products — $productRows, categories — $categoryRows"
 exit 0
