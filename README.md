@@ -52,11 +52,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check.ps1
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up -d
+docker compose up -d --wait
 docker compose ps
 ```
 
-В bash первая строка — `cp .env.example .env`, остальные команды те же. Первый старт занимает несколько секунд: `nginx` ждёт, пока `db` пройдёт healthcheck.
+В bash первая строка — `cp .env.example .env`, остальные команды те же. `--wait` возвращает управление только когда все сервисы стали `healthy`; без него `docker compose ps` первые секунды показывает `health: starting`.
 
 ```text
 NAME                     IMAGE                COMMAND                  SERVICE   CREATED          STATUS                    PORTS
@@ -79,7 +79,7 @@ error while interpolating services.db.environment.POSTGRES_DB: required variable
 ## Проверки
 
 ```powershell
-.\scripts\check.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
 Скрипт делает четыре проверки: все три контейнера запущены, сайт отвечает по HTTP, Adminer отвечает по HTTP, в таблице `products` ожидаемое число строк (по умолчанию 24). Код возврата 0 — всё прошло, иначе 1.
@@ -117,6 +117,7 @@ docker-stand-db-1 Copied docker-stand-db-1:/tmp/backup.dump to .\backups\2026112
 
 ```powershell
 $dump = Get-ChildItem .\backups\*.dump | Sort-Object LastWriteTime | Select-Object -Last 1
+if (-not $dump) { Write-Host 'Дампов нет — сначала выполните .\scripts\backup.ps1'; return }
 powershell -ExecutionPolicy Bypass -File .\scripts\restore.ps1 -File $dump.FullName
 ```
 
@@ -194,8 +195,9 @@ pg_restore код: 0
 | `required variable POSTGRES_DB is missing a value: Скопируйте .env.example в .env` | нет файла `.env` | `Copy-Item .env.example .env` |
 | `docker compose up` не может занять порт | порт `8080` уже занят другим процессом | поменять `STACK_PORT` в `.env` и поднять заново |
 | контейнер `db` в статусе `unhealthy` | база не прошла `pg_isready`: неверный пароль, повреждённый или занятый том | `docker compose logs db`, проверить `POSTGRES_*` в `.env` |
-| `/adminer` без завершающего слэша открывает статику стенда или редиректит без порта | запрос к `/adminer` вместо `/adminer/` | открывать `/adminer/`: nginx отвечает 301 на `/adminer/` с сохранением порта |
-| `[FAIL] Данные в базе: psql вернул код 1 — таблица products недоступна` | база пустая, схема снесена | восстановить из дампа: `.\scripts\restore.ps1 -File .\backups\<файл>.dump` |
+| Adminer открывается, но вход не проходит | в поле Server указано не `db`, или логин и пароль не из `.env` | Server: `db`, System: PostgreSQL, логин и пароль — значения `POSTGRES_USER` и `POSTGRES_PASSWORD` из `.env` |
+| `/adminer/` отдаёт 502 сразу после запуска | контейнер Adminer ещё стартует, а nginx уже принял соединение | подождать 5–10 секунд и обновить страницу; `docker compose ps` должен показать adminer `Up` |
+| `[FAIL] Данные в базе: psql вернул код 1 — таблица products недоступна` | база пустая, схема снесена | восстановить из дампа: `powershell -ExecutionPolicy Bypass -File .\scripts\restore.ps1 -File .\backups\<файл>.dump` |
 | `Fail : Дамп не читается: ...` | файл дампа битый или обрезан | взять другой дамп; база при этом не меняется |
 | `Fail : Контейнер db не запущен. Выполните: docker compose up -d` | стенд погашен | `docker compose up -d`, затем повторить команду |
 
