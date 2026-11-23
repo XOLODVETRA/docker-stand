@@ -54,7 +54,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ## Запуск
 
 ```powershell
-git clone <url> docker-stand
+git clone https://github.com/XOLODVETRA/docker-stand.git
+cd docker-stand
 cd docker-stand
 Copy-Item .env.example .env
 docker compose up -d --wait
